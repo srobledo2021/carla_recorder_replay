@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 #
-#  Copyright (C) Roberto Calvo Palomino
+#  Copyright (C) URJC DeepRacer
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -17,7 +17,7 @@
 #  along with this program.  If not, see http://www.gnu.org/licenses/. 
 #
 #  Author : Roberto Calvo Palomino <roberto.calvo at urjc dot es
-#
+#           Sergio Robledo <s.robledo.2021 at alumnos dot urjc dot es>
 
 
 import carla
@@ -26,156 +26,92 @@ import numpy as np
 import sys
 import time
 import os
+import argparse
 import csv
 import cv2
-import pandas as pd
+from pathlib import Path
+
 import queue
 from queue import Queue
 
-log_filename = "/tmp/town04_autopilot.log"
-SPEED_CSV = "./speedTown4.csv"
+from helper import load_speed_from_csv
+from dataset_manager import DatasetSaver
 
-# Dataset paths
-currtime   = str(int(time.time() * 1000))
-DATASET_ID = "Deepracer_BaseMap_" + currtime
-SAVE_DIR   = DATASET_ID
-RGB_DIR    = os.path.join(SAVE_DIR, "rgb")
-MASK_DIR   = os.path.join(SAVE_DIR, "masks")
-CSV_PATH   = os.path.join(SAVE_DIR, "dataset.csv")
+RATE_CONTROL_LOOP = 30
 
-os.makedirs(RGB_DIR, exist_ok=True)
-os.makedirs(MASK_DIR, exist_ok=True)
-if not os.path.exists(CSV_PATH):
-    os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
-    with open(CSV_PATH, "w", newline="") as f:
-        csv.writer(f).writerow(["rgb_path","mask_path","timestamp","throttle","steer","brake","speed"])
+# SPEED_CSV = "./speedTown4.csv"
 
+# # Dataset paths
+# current_time   = str(int(time.time() * 1000))
+# DATASET_ID = current_time + "_dataset"  
+# SAVE_DIR   = DATASET_ID
+# RGB_DIR    = os.path.join(SAVE_DIR, "rgb")
+# MASK_DIR   = os.path.join(SAVE_DIR, "masks")
+# CSV_PATH   = os.path.join(SAVE_DIR, "dataset.csv")
 
-def load_speed_from_csv(
-    dataset_csv: str,
-    speed_csv: str,
-    dst_speed_col: str = "speed",
-    src_speed_col: str = "speed_m_s",
-    src_time_col: str = "sim_time"
-):
-
-    if not os.path.isfile(dataset_csv):
-        print(f" Unable to find dataset: {dataset_csv}")
-        return
-    if not os.path.isfile(speed_csv):
-        print(f"Unable to find speed csv: {speed_csv}")
-        return
-
-    df_dst = pd.read_csv(dataset_csv)
-    df_src = pd.read_csv(speed_csv)
-
-    for col in ["timestamp", dst_speed_col]:
-        if col not in df_dst.columns:
-            print(f"Dataset does not have col: '{col}'.")
-            return
-    for col in [src_time_col, src_speed_col]:
-        if col not in df_src.columns:
-            print(f"CSV speed dataset does not have col: '{col}'.")
-            return
-    if df_dst.empty or df_src.empty:
-        print("Warning: a file has empty data")
-        return
-
-    # Convert to num
-    dst_ts = pd.to_numeric(df_dst["timestamp"], errors="coerce")
-    src_ts = pd.to_numeric(df_src[src_time_col], errors="coerce")
-    src_sp = pd.to_numeric(df_src[src_speed_col], errors="coerce")
-
-    # Filter
-    valid_src_mask = src_ts.notna() & src_sp.notna()
-    if not valid_src_mask.any():
-        print("Speed csv has incorrect data")
-        return
-
-    # 1) Keep first valid timestamp from speed csv
-    first_src_idx = np.where(valid_src_mask.to_numpy())[0][0]
-    first_src_time = float(src_ts.iloc[first_src_idx])
-
-    # 2) Search same timestamp in the dataset to align both files 
-    if dst_ts.notna().sum() == 0:
-        print("Error finding timestamp")
-        return
-
-    # Fit index
-    diffs = np.abs(dst_ts - first_src_time)
-    anchor_dst_idx = int(diffs.idxmin())
-
-    # 3) Prepare data to copy
-    src_v = src_sp.iloc[first_src_idx:].to_numpy(dtype=float)
-
-    # 4) Sequential copy
-    n_dst = len(df_dst) - anchor_dst_idx
-    n_src = len(src_v)
-    n = min(n_dst, n_src)
-
-    if n <= 0:
-        print("Not enough space to copy speed")
-        return
-
-    df_dst.loc[anchor_dst_idx:anchor_dst_idx + n - 1, dst_speed_col] = src_v[:n]
-    df_dst.to_csv(dataset_csv, index=False)
-
-    # 5) Info
-    print("[INFO] Fitting per timestamp:")
-    print(f"  - first_src_time (vel CSV) = {first_src_time:.6f}")
-    print(f"  - timestamp(dataset)[anchor] = {dst_ts.iloc[anchor_dst_idx]:.6f} (idx={anchor_dst_idx})")
-    print(f"[OK] Cpied {n} speed data in '{dst_speed_col}' from {anchor_dst_idx} (sequential, ignored times from anchor.")
+# os.makedirs(RGB_DIR, exist_ok=True)
+# os.makedirs(MASK_DIR, exist_ok=True)
+# if not os.path.exists(CSV_PATH):
+#     os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+#     with open(CSV_PATH, "w", newline="") as f:
+#         csv.writer(f).writerow(["rgb_path","mask_path","timestamp","throttle","steer","brake","speed"])
 
 
-def safe_data(timestamp, bgr, mask_rgb, throttle, steer, brake, speed):
-    rgb_name  = f"{timestamp}_rgb_{DATASET_ID}.png"
-    mask_name = f"{timestamp}_mask_{DATASET_ID}.png"
-    cv2.imwrite(os.path.join(RGB_DIR,  rgb_name),  bgr)
-    cv2.imwrite(os.path.join(MASK_DIR, mask_name), cv2.cvtColor(mask_rgb, cv2.COLOR_RGB2BGR))
-    with open(CSV_PATH, "a", newline="") as f:
-        csv.writer(f).writerow([f"/rgb/{rgb_name}", f"/masks/{mask_name}", timestamp,
-                                throttle, steer, brake, speed])
+
+# def save_data(timestamp, bgr, mask_rgb, throttle, steer, brake, speed):
+#     rgb_name  = f"{timestamp}_rgb_{DATASET_ID}.png"
+#     mask_name = f"{timestamp}_mask_{DATASET_ID}.png"
+#     cv2.imwrite(os.path.join(RGB_DIR,  rgb_name),  bgr)
+#     cv2.imwrite(os.path.join(MASK_DIR, mask_name), cv2.cvtColor(mask_rgb, cv2.COLOR_RGB2BGR))
+#     with open(CSV_PATH, "a", newline="") as f:
+#         csv.writer(f).writerow([f"/rgb/{rgb_name}", f"/masks/{mask_name}", timestamp,
+#                                 throttle, steer, brake, speed])
 
 
 def get_log_duration(client, log_file):
-    import re            
+    import re           
     info = client.show_recorder_file_info(log_file, False)  
     # Look at for Duration: 12.34 s"
     match = re.search(r"Duration:\s+([0-9.]+)", info)
     if not match:
-        raise RuntimeError("No se pudo leer duración del log")
+        raise RuntimeError("Duration time cannot be read!")
     return float(match.group(1))
 
-def replay_loop(view="car"):
+def replay_loop(args, view="car"):
+
     pygame.init()
     pygame.display.set_caption(f"CARLA Replay - Replay view {view} ")
     display_width, display_height = 800, 600
     screen = pygame.display.set_mode((display_width, display_height))
 
-    client = carla.Client('localhost', 3010)  
+    client = carla.Client('localhost', args.port)  
     client.set_timeout(10.0)
 
     world = client.get_world()
+    
+    path = Path(args.log_path)
+    logs = list(path.glob("*.log"))    
+    if (len(logs) == 0):
+        print(f"Error, no log file found in {args.log_path}")
+        exit(-1)    
 
-    # Synchronous mode disabled    
-    # settings = world.get_settings()
-    # settings.synchronous_mode = True
-    # settings.fixed_delta_seconds = 0.05
-    # world.apply_settings(settings)
-
+    p = logs[0]
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    log_filename = str(p)
+    print(f'Using log file {log_filename}')
 
     duration = get_log_duration(client, log_filename)
     duration = duration + world.get_snapshot().timestamp.elapsed_seconds
-    print(f"Replaying: {log_filename}, duration: {duration:.2f} s")    
-    
+    print(f"Replaying: {log_filename}, duration: {duration:.2f} s")
 
+    dataset = None
+    if args.generate_dataset_path is not None:        
+        dataset = DatasetSaver(args.generate_dataset_path)
+    
     client.replay_file(log_filename, 0, 0, 0)
 
-
     blueprint_library = world.get_blueprint_library()
-
-    # Required to make a tick for actors to appear in the scene
-    #world.tick()    
     
     actors = None
 
@@ -189,8 +125,6 @@ def replay_loop(view="car"):
 
     vehicle = actors[0]  # first vehicle is ego
     print(f"Using ego con id={vehicle.id}, type={vehicle.type_id}")
-    
-    
     
     camera_bp = blueprint_library.find("sensor.camera.rgb")
     camera_bp.set_attribute("image_size_x", str(display_width))
@@ -223,14 +157,13 @@ def replay_loop(view="car"):
 
     clock = pygame.time.Clock()
 
-    # Start ata relative time 0.0 to syncronize with speed csv
+    # Start at a relative time 0.0 to syncronize with speed csv
     t0_sim = 0.0
 
     try:
         while True:            
-
-            #world.tick() //synchronous_mode disabled
-            clock.tick(30) # asynchronous mode enabled
+            
+            clock.tick(RATE_CONTROL_LOOP)
 
             snapshot = world.get_snapshot()  
             sim_time = snapshot.timestamp.elapsed_seconds                      
@@ -247,8 +180,6 @@ def replay_loop(view="car"):
                     if e.type == pygame.QUIT:
                         raise KeyboardInterrupt
                 continue
-
-
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -267,48 +198,52 @@ def replay_loop(view="car"):
 
             pygame.display.flip()
 
+            if dataset is not None:
+                # Generate dataset
+                hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+                mask_y = cv2.inRange(hsv, np.array([18, 50, 150]), np.array([40, 255, 255]))
+                mask_w = cv2.inRange(hsv, np.array([0, 0, 200]),  np.array([180, 30, 255]))
+                mask_c = np.zeros(mask_w.shape, np.uint8); mask_c[mask_w>0]=1; mask_c[mask_y>0]=2
+                mask_rgb = np.zeros_like(rgb); mask_rgb[mask_c==1]=[255,255,255]; mask_rgb[mask_c==2]=[255,255,0]
 
-            # Generate dataset
-            hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-            mask_y = cv2.inRange(hsv, np.array([18, 50, 150]), np.array([40, 255, 255]))
-            mask_w = cv2.inRange(hsv, np.array([0, 0, 200]),  np.array([180, 30, 255]))
-            mask_c = np.zeros(mask_w.shape, np.uint8); mask_c[mask_w>0]=1; mask_c[mask_y>0]=2
-            mask_rgb = np.zeros_like(rgb); mask_rgb[mask_c==1]=[255,255,255]; mask_rgb[mask_c==2]=[255,255,0]
+                # You can get the controls of the vehicule at each snapshot
+                # ctrl = vehicle.get_control()
+                # print(ctrl.throttle, ctrl.steer, ctrl.brake)
 
-            # You can get the controls of the vehicule at each snapshot
-            # ctrl = vehicle.get_control()
-            # print(ctrl.throttle, ctrl.steer, ctrl.brake)
-            ctrl = vehicle.get_control()
-            throttle = float(ctrl.throttle)
-            steer    = max(-1.0, min(1.0, float(ctrl.steer)))
-            brake    = float(ctrl.brake)
-            speed = 0.0
 
-            safe_data(rel_time, bgr, mask_rgb, throttle, steer, brake, speed)
+                ctrl = vehicle.get_control()
+                throttle = float(ctrl.throttle)
+                steer    = max(-1.0, min(1.0, float(ctrl.steer)))
+                brake    = float(ctrl.brake)
+                speed = 0.0
+
+                dataset.save_sample(rel_time, bgr, mask_rgb, throttle, steer, brake, speed)
 
 
     except KeyboardInterrupt:
         print("Exit...")
-
+    except Exception as e:
+        print(e)
     finally:
         if camera is not None:
             camera.stop()
             camera.destroy()
 
         vehicle.destroy()
+        
+        if dataset is not None:
 
-        # settings.synchronous_mode = False
-        # world.apply_settings(settings)
+            # Takes both dataset and speed CSV files and do the matching
+            path = Path(args.log_path)
+            logs = list(path.glob("*.csv"))    
+            if (len(logs) == 0):
+                print(f"Error, no data csv file found in {args.log_path}")
+                exit(-1) 
 
-        try:
-            load_speed_from_csv(
-                CSV_PATH,
-                SPEED_CSV,
-                dst_speed_col="speed",
-                src_speed_col="speed_m_s"
-            )
-        except Exception as e:
-            print(f"[ERROR] Acople secuencial de velocidades: {e}")
+            csv_data_filename = str(logs[0])
+
+            dataset.adjust_speed(csv_data_filename)
+
 
         pygame.quit()
         sys.exit()
@@ -316,5 +251,33 @@ def replay_loop(view="car"):
 
 if __name__ == "__main__":
 
+
+    parser = argparse.ArgumentParser(description="recorder")
+
+    parser.add_argument("--log_path", type=str, required=True,
+                        help="Directory where log files will be loaded")
+    
+    parser.add_argument("--port", "--carla-port", type=int, default=3010,
+                        help="Port used to connect to the CARLA simulator")
+    
+    parser.add_argument("--tport","--carla-traffic-port", type=int, default=3020,
+                        help="Port used by the CARLA traffic manager")
+    
+    parser.add_argument("--generate_dataset_path",  type=str, default=None,
+                        help="Enable dataset generation and set the path to save it")
+    
+    parser.add_argument(
+                        "--dataset_types", "--carla-dataset-types",
+                        nargs="+",
+                        choices=["rgb", "mask", "segmented", "all"],
+                        default=["all"],
+                        metavar="TYPE",
+                        help=(
+                            "Types of frames to export. Options: rgb, mask, segmented, all. "
+                            "Example: --dataset_types rgb mask"
+                        )
+                    )
+    args = parser.parse_args()
+
     # Use "bike" or "car" to choose from where point of view you want to replay de simulation
-    replay_loop("car")
+    replay_loop(args, "car")

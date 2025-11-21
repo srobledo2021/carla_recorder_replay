@@ -14,11 +14,42 @@ Typically the recorder is executed in **asynchronous mode**, so the client does 
 As the recorder does not save any sensor data, and we want to know the car's speed while replaying the log file, we will be using a csv file. In that file, we will store two variables: current timsetamp and speed.  
 Later, while doing the replay, we will join speed data with the rest of the sensor data.
 
+```
+$ python3 recorder.py --help
+pygame 2.6.1 (SDL 2.28.4, Python 3.10.16)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+usage: recorder.py [-h] [--log_path LOG_PATH] [--town TOWN] [--port PORT] [--tport TPORT] [--extra_actor]
+
+recorder
+
+options:
+  -h, --help            show this help message and exit
+  --log_path LOG_PATH   Directory where log files will be stored
+  --town TOWN, --carla-town TOWN
+                        Name of the CARLA map to load
+  --port PORT, --carla-port PORT
+                        Port used to connect to the CARLA simulator
+  --tport TPORT, --carla-traffic-port TPORT
+                        Port used by the CARLA traffic manager
+  --extra_actor, --carla-extra-actor
+                        Spawn an additional actor in front of the ego-vehicle
+```
+
+**recorder.py** saves data as following (in the specified log_path):
+
+```
+$ tree logs
+logs
+└── 1763717922_Town04
+    ├── data.csv
+    └── Town04.log
+```
+
 # Replay
 
 Run **replay.py** to reproduce the CARLA log previously saved with the recorder. 
 
-Typically replay is executed in **synchronous mode** when generating synthetic datasets. This ensures that no frames or events are missed during the simulation. However, you can also replay the log in **asyncronous** mode if needed.
+Due to CARLA limitations replay always execute in **asynchronous mode**. This script also creates a dataset if needed.
 
 Dive in to the code of the **replay.py** script, and see how you can change the point of view of the actor (vehicle or bike) from which you want to analyze the simulation.
 
@@ -30,9 +61,24 @@ You can see below how you can run the same simulation twice from different point
 | <img src="images/car_view.png" width="400px"/> | <img src="images/bike_view.png" width="400px"/> |
 
 
-For the replay, as the speed csv that we created in the record was taken at **30FPS** in asynchronous mode, we need to do the replay in the same conditions so that the speed  data matches the other data (throttle, breaks, steering...). 
+For the replay, as the speed csv that we created in the record was taken at **30FPS** in asynchronous mode, we need to do the replay in the same conditions so that the speed  data matches the other data (throttle, breaks, steering...).  To make sure that frames are not missed in this **asynchronous** mode, we will be using a Queue (python queues have their own locks)
 
-To make sure that frames are not missed in this **asynchronous** mode, we will be using a Queue (python queues have their own locks)
+For creating datasets while replay the log, execute as follows:
+
+```
+python3 replay.py --log_path logs/1763717922_Town04/ --generate_dataset_path /tmp/
+```
+
+The latter will create a dataset ready to use:
+
+```
+$ ls /tmp/1763718805717_dataset/
+
+-rw-rw-r--    31679 nov 21 10:53 dataset.csv
+drwxrwxr-x    20480 nov 21 10:53 mask
+drwxrwxr-x    12288 nov 21 10:53 rgb
+```
+
 
 ## CARLA simulator
 

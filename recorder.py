@@ -182,19 +182,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="recorder")
 
     parser.add_argument("--log_path", type=str, default=os.getcwd() + "/logs/",
-                        help="Folder to save logs")
+                        help="Directory where log files will be stored")
     
     parser.add_argument("--town", "--carla-town", type=str, default="Town04",
-                        help="Map where run recorder")
+                        help="Name of the CARLA map to load")
     
     parser.add_argument("--port", "--carla-port", type=int, default=3010,
-                        help="Default port for CARLA")
+                        help="Port used to connect to the CARLA simulator")
     
     parser.add_argument("--tport","--carla-traffic-port", type=int, default=3020,
-                        help="Default port for CARLA")
+                        help="Port used by the CARLA traffic manager")
     
     parser.add_argument("--extra_actor", "--carla-extra-actor", action="store_true",
-                        help="Enable an extra actor in fron of the ego vehicle")
+                        help="Spawn an additional actor in front of the ego-vehicle")
 
     args = parser.parse_args()
 
