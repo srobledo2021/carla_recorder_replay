@@ -34,7 +34,6 @@ from pathlib import Path
 import queue
 from queue import Queue
 
-from helper import load_speed_from_csv
 from dataset_manager import DatasetSaver
 
 RATE_CONTROL_LOOP = 30
